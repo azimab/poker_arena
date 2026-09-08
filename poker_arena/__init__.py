@@ -1,5 +1,6 @@
 from .engine import DEFAULT_CONFIG, HandResult, TableConfig, play_hand
 from .match import MatchResult, play_match
+from .submission import BotLoadError, load_bot
 from .types import (
     Action,
     ActionRecord,
@@ -15,6 +16,7 @@ __all__ = [
     "ActionRecord",
     "ActionType",
     "Bot",
+    "BotLoadError",
     "DEFAULT_CONFIG",
     "HandResult",
     "IllegalAction",
@@ -22,6 +24,7 @@ __all__ = [
     "Observation",
     "Street",
     "TableConfig",
+    "load_bot",
     "play_hand",
     "play_match",
 ]

@@ -61,4 +61,36 @@ result.busted        # seat index that ran out of chips, or None
 result.hands         # every HandResult in order
 ```
 
+## Submitting a bot
+
+A submission is a `.py` file exposing a module-level `create_bot() -> Bot`
+factory:
+
+```python
+# my_bot.py
+from poker_arena import Action
+
+class MyBot:
+    name = "my-bot"
+
+    def act(self, obs):
+        return Action.call()
+
+def create_bot():
+    return MyBot()
+```
+
+`load_bot` loads the file and checks its shape:
+
+```python
+from poker_arena import load_bot
+
+bot = load_bot("my_bot.py")
+```
+
+Call `load_bot` again for every match -- it re-imports the file and calls
+`create_bot()` fresh each time, so no state leaks between matches. This
+runs submitted code directly in-process; it does not sandbox it, so only
+load bots you trust until that lands.
+
 
