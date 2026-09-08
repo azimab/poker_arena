@@ -1,4 +1,5 @@
 from .engine import DEFAULT_CONFIG, HandResult, TableConfig, play_hand
+from .match import MatchResult, play_match
 from .types import (
     Action,
     ActionRecord,
@@ -17,8 +18,10 @@ __all__ = [
     "DEFAULT_CONFIG",
     "HandResult",
     "IllegalAction",
+    "MatchResult",
     "Observation",
     "Street",
     "TableConfig",
     "play_hand",
+    "play_match",
 ]

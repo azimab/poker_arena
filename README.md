@@ -47,4 +47,18 @@ result.deltas   # (+350, -350) -- chips won by each seat, always sums to zero
 result.history  # every decision, in order, enough to replay the hand
 ```
 
+## Playing a match
+
+`play_match` plays a series of hands, carrying stacks forward and
+alternating the button, stopping early if a seat busts:
+
+```python
+from poker_arena import play_match
+
+result = play_match([TightBot(), CallBot()], seed=42, hands=100)
+result.final_stacks  # (10_650, 9_350) -- stacks after the last hand played
+result.busted        # seat index that ran out of chips, or None
+result.hands         # every HandResult in order
+```
+
 

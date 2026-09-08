@@ -49,13 +49,25 @@ def play_hand(
     seed: int,
     button: int = 0,
     config: TableConfig = DEFAULT_CONFIG,
+    starting_stacks: tuple[int, int] | None = None,
 ) -> HandResult:
-    """Play one hand between `bots[0]` and `bots[1]` and return the result."""
-    return _Hand(bots, seed, button, config).run()
+    """Play one hand between `bots[0]` and `bots[1]` and return the result.
+
+    `starting_stacks` overrides `config.starting_stack` per seat, so a match
+    runner can carry stacks forward from one hand to the next.
+    """
+    return _Hand(bots, seed, button, config, starting_stacks).run()
 
 
 class _Hand:
-    def __init__(self, bots: Sequence[Bot], seed: int, button: int, config: TableConfig):
+    def __init__(
+        self,
+        bots: Sequence[Bot],
+        seed: int,
+        button: int,
+        config: TableConfig,
+        starting_stacks: tuple[int, int] | None = None,
+    ):
         if len(bots) != 2:
             raise ValueError("heads-up takes exactly 2 bots")
         if button not in (0, 1):
@@ -65,13 +77,14 @@ class _Hand:
         self.seed = seed
         self.button = button
         self.cfg = config
+        self.starting_stacks = starting_stacks or (config.starting_stack, config.starting_stack)
 
         deck = cards.shuffled_deck(seed)
         self.holes = [[deck.pop(), deck.pop()], [deck.pop(), deck.pop()]]
         self.runout = [deck.pop() for _ in range(5)]
 
         self.board: list[int] = []
-        self.stacks = [config.starting_stack, config.starting_stack]
+        self.stacks = list(self.starting_stacks)
         self.committed = [0, 0]
         self.street_bets = [0, 0]
         self.folded = [False, False]
@@ -257,7 +270,7 @@ class _Hand:
             board=tuple(cards.to_str(c) for c in self.board),
             history=tuple(self.history),
             pot=pot,
-            deltas=tuple(self.stacks[s] - self.cfg.starting_stack for s in (0, 1)),
+            deltas=tuple(self.stacks[s] - self.starting_stacks[s] for s in (0, 1)),
             winners=winners,
             showdown=showdown,
             hand_classes=hand_classes,
