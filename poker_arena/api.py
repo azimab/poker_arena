@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from . import db
 from .sandbox import IMAGE, MAX_SOURCE_BYTES, image_exists
 from .submission import BotLoadError, check_submission
 
+log = logging.getLogger(__name__)
 checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
 
 
@@ -37,19 +39,31 @@ def get_conn():
 
 def run_check(bot_id: int, source: str) -> None:
     try:
+        _run_check(bot_id, source)
+    except Exception:
+        log.exception("check for bot %s failed", bot_id)
+
+
+def _run_check(bot_id: int, source: str) -> None:
+    try:
         name = check_submission(source)
     except BotLoadError as exc:
         with db.connect() as conn:
             conn.execute(
-                "UPDATE bots SET status = 'rejected', error = %s WHERE id = %s", (str(exc), bot_id)
+                "UPDATE bots SET status = 'rejected', error = %s WHERE id = %s AND status = 'pending'",
+                (str(exc), bot_id),
             )
         return
 
     with db.connect() as conn:
-        account_id = conn.execute(
-            "SELECT a.id FROM accounts a JOIN bots b ON b.account_id = a.id WHERE b.id = %s FOR UPDATE OF a",
+        row = conn.execute(
+            "SELECT a.id, b.status FROM accounts a JOIN bots b ON b.account_id = a.id "
+            "WHERE b.id = %s FOR UPDATE OF a",
             (bot_id,),
-        ).fetchone()["id"]
+        ).fetchone()
+        if row["status"] != "pending":
+            return
+        account_id = row["id"]
         # Checks run concurrently, so an older upload can finish after a newer one
         # and must not displace it.
         params = {"account": account_id, "bot": bot_id, "name": name}
@@ -94,6 +108,8 @@ def submit_bot(username: str, file: UploadFile, conn: psycopg.Connection = Depen
         source = raw.decode()
     except UnicodeDecodeError as exc:
         raise HTTPException(422, f"submission is not valid utf-8: {exc}")
+    if "\x00" in source:
+        raise HTTPException(422, "submission contains NUL bytes")
 
     bot = conn.execute(
         "INSERT INTO bots (account_id, source) VALUES (%s, %s) RETURNING id, status, created_at",

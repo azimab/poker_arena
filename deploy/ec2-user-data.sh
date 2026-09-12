@@ -10,11 +10,12 @@
 #     --metadata-options HttpTokens=required,HttpPutResponseHopLimit=1 \
 #     --user-data file://deploy/ec2-user-data.sh
 #
-set -euxo pipefail
+set -euo pipefail
+ARENA_DATABASE_URL=${ARENA_DATABASE_URL:-postgresql://CHANGEME}
+set -x
 
 REPO_URL=${REPO_URL:-https://github.com/CHANGEME/poker-arena.git}
 ARENA_HOME=/opt/poker-arena
-ARENA_DATABASE_URL=${ARENA_DATABASE_URL:-postgresql://CHANGEME}
 
 dnf -y update
 dnf -y install docker git python3.11 python3.11-pip

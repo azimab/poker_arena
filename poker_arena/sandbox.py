@@ -127,6 +127,7 @@ class SandboxedBot:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",
         )
 
         # The submission crosses the boundary as text on stdin: the container
@@ -139,7 +140,9 @@ class SandboxedBot:
             self._fail("sandbox container exited before loading the bot")
         hello = self._parse(line)
         if "error" in hello:
-            self._fail(hello["error"])
+            self._fail(str(hello["error"]))
+        if not isinstance(hello.get("name"), str) or not hello["name"]:
+            self._fail(f"sandbox sent malformed hello: {line.strip()[:200]!r}")
         self.name = hello["name"]
 
     def act(self, obs: Observation) -> Action:
