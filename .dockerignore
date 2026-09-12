@@ -1,0 +1,8 @@
+.git
+.venv
+tests
+Dockerfile
+**/__pycache__
+deploy
+results
+submissions
