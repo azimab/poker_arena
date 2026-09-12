@@ -166,7 +166,10 @@ class SandboxedBot:
             self._fail(reply["error"])
         if self._spent > self._budget:
             self._fail(f"{self.name!r} exceeded its {self._budget}s match time budget")
-        return Action(ActionType(reply["type"]), reply["amount"])
+        try:
+            return Action(ActionType(reply["type"]), reply["amount"])
+        except (KeyError, ValueError):
+            self._fail(f"{self.name!r} sent a malformed action: {line.strip()[:200]!r}")
 
     def close(self) -> None:
         self._destroy()

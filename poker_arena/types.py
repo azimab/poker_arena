@@ -22,6 +22,10 @@ class ActionType(str, Enum):
 class IllegalAction(Exception):
     """A bot returned an action the rules do not allow."""
 
+    def __init__(self, seat: int, message: str):
+        super().__init__(message)
+        self.seat = seat
+
 
 @dataclass(frozen=True)
 class Action:

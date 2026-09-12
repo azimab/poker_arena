@@ -5,7 +5,8 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
-from poker_arena import DEFAULT_CONFIG, SandboxError, SandboxedBot, play_match
+from poker_arena import DEFAULT_CONFIG, IllegalAction, SandboxError, SandboxedBot, play_match
+from poker_arena.sandbox import IMAGE, image_exists
 
 HANDS = int(os.environ.get("ARENA_HANDS", 100))
 PACE = float(os.environ.get("ARENA_PACE", 1.0))
@@ -13,20 +14,43 @@ SEED = int(os.environ.get("ARENA_SEED", 1))
 START = DEFAULT_CONFIG.starting_stack
 
 
-def play(a: pathlib.Path, b: pathlib.Path) -> dict:
+class Forfeit(Exception):
+    def __init__(self, seat: int, cause: Exception):
+        super().__init__(str(cause))
+        self.seat = seat
+
+
+class Seat:
+    def __init__(self, seat: int, bot: SandboxedBot):
+        self.seat = seat
+        self.bot = bot
+        self.name = bot.name
+
+    def act(self, obs):
+        try:
+            return self.bot.act(obs)
+        except SandboxError as exc:
+            raise Forfeit(self.seat, exc) from exc
+
+
+def play(paths: tuple[pathlib.Path, pathlib.Path]) -> dict:
+    bots: list[SandboxedBot] = []
     try:
-        with SandboxedBot(a, pace=PACE) as x, SandboxedBot(b, pace=PACE) as y:
-            result = play_match([x, y], seed=SEED, hands=HANDS)
+        for seat, path in enumerate(paths):
+            try:
+                bots.append(SandboxedBot(path, pace=PACE))
+            except SandboxError as exc:
+                raise Forfeit(seat, exc) from exc
+        result = play_match([Seat(i, b) for i, b in enumerate(bots)], seed=SEED, hands=HANDS)
         return {
             "deltas": [s - START for s in result.final_stacks],
             "hands": len(result.hands),
         }
-    except SandboxError as exc:
-        # Whichever bot the sandbox named forfeits; if it named neither (a
-        # daemon or image problem) the pairing is void and scores nothing.
-        message = str(exc)
-        loser = next((i for i, p in enumerate((a, b)) if repr(p.stem) in message), None)
-        return {"error": message.splitlines()[0], "forfeit": loser}
+    except (Forfeit, IllegalAction) as exc:
+        return {"error": str(exc).splitlines()[0], "forfeit": exc.seat}
+    finally:
+        for bot in bots:
+            bot.close()
 
 
 def main(submissions: pathlib.Path, results: pathlib.Path) -> int:
@@ -34,18 +58,28 @@ def main(submissions: pathlib.Path, results: pathlib.Path) -> int:
     if len(paths) < 2:
         print(f"need at least 2 submissions in {submissions}", file=sys.stderr)
         return 1
+    # Checked up front so a missing image or dead daemon aborts the run instead
+    # of being blamed on whichever bot happened to load first.
+    if not image_exists():
+        print(f"sandbox image {IMAGE!r} is unavailable (is docker running?)", file=sys.stderr)
+        return 1
 
     standings = {p.stem: 0 for p in paths}
     pairings = []
     for a, b in itertools.combinations(paths, 2):
-        outcome = play(a, b) | {"bots": [a.stem, b.stem]}
-        if "deltas" in outcome:
-            standings[a.stem] += outcome["deltas"][0]
-            standings[b.stem] += outcome["deltas"][1]
-        elif outcome["forfeit"] is not None:
-            standings[(a, b)[outcome["forfeit"]].stem] -= START
-        pairings.append(outcome)
-        print(json.dumps(outcome), flush=True)
+        # Each pairing is played twice on the same seed with seats swapped, so
+        # both bots are dealt the same cards and card luck largely cancels out.
+        legs = []
+        for order in ((a, b), (b, a)):
+            outcome = play(order) | {"bots": [p.stem for p in order]}
+            if "deltas" in outcome:
+                for path, delta in zip(order, outcome["deltas"]):
+                    standings[path.stem] += delta
+            else:
+                standings[order[outcome["forfeit"]].stem] -= START
+            legs.append(outcome)
+            print(json.dumps(outcome), flush=True)
+        pairings.append({"bots": [a.stem, b.stem], "legs": legs})
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results.mkdir(parents=True, exist_ok=True)

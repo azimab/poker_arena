@@ -85,6 +85,20 @@ def test_undersized_raise_is_illegal():
         )
 
 
+def test_illegal_action_names_the_offending_seat():
+    with pytest.raises(IllegalAction) as excinfo:
+        play_hand([CallBot(), ScriptedBot(Action.raise_to(150))], seed=1, button=0, config=CFG)
+    assert excinfo.value.seat == 1
+
+
+@pytest.mark.parametrize("amount", [250.5, "300", None])
+def test_non_integer_raise_amount_is_illegal(amount):
+    with pytest.raises(IllegalAction, match="non-integer amount"):
+        play_hand(
+            [ScriptedBot(Action(ActionType.RAISE, amount)), CallBot()], seed=1, button=0, config=CFG
+        )
+
+
 def test_raise_is_illegal_once_the_opponent_is_all_in():
     shove = ScriptedBot(Action.raise_to(10_000))
     hero = ScriptedBot(Action.raise_to(10_000))

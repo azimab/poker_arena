@@ -150,7 +150,9 @@ class _Hand:
     def _decide(self, seat: int) -> Action:
         action = self.bots[seat].act(self._observe(seat))
         if not isinstance(action, Action):
-            raise IllegalAction(f"seat {seat} returned {action!r}, not an Action")
+            raise IllegalAction(seat, f"seat {seat} returned {action!r}, not an Action")
+        if type(action.amount) is not int:
+            raise IllegalAction(seat, f"seat {seat} returned a non-integer amount {action.amount!r}")
         return action
 
     def _apply(self, seat: int, action: Action, acted: list[bool]) -> None:
@@ -164,7 +166,7 @@ class _Hand:
 
         elif action.type is ActionType.CHECK:
             if not can_check:
-                raise IllegalAction(f"seat {seat} checked facing a bet of {to_call}")
+                raise IllegalAction(seat, f"seat {seat} checked facing a bet of {to_call}")
             self._record(seat, ActionType.CHECK, 0)
 
         elif action.type is ActionType.CALL:
@@ -174,9 +176,10 @@ class _Hand:
 
         elif action.type is ActionType.RAISE:
             if not can_raise:
-                raise IllegalAction(f"seat {seat} cannot raise here")
+                raise IllegalAction(seat, f"seat {seat} cannot raise here")
             if not min_to <= action.amount <= max_to:
                 raise IllegalAction(
+                    seat,
                     f"seat {seat} raised to {action.amount}, legal range is {min_to}-{max_to}"
                 )
             increment = action.amount - self.street_bets[opp]
@@ -188,7 +191,7 @@ class _Hand:
             self._record(seat, ActionType.RAISE, put_in)
 
         else:
-            raise IllegalAction(f"seat {seat} returned unknown action {action.type!r}")
+            raise IllegalAction(seat, f"seat {seat} returned unknown action {action.type!r}")
 
     def _legal(self, seat: int) -> tuple[int, bool, bool, int, int]:
         opp = 1 - seat
