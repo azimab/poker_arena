@@ -4,13 +4,14 @@ FROM python:3.11-slim AS build
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY poker_arena ./poker_arena
-RUN pip install --no-cache-dir --target /opt/arena .
+RUN pip install --no-cache-dir --target /opt/arena ".[sandbox]"
 
 FROM python:3.11-slim
 COPY --from=build /opt/arena /opt/arena
 ENV PYTHONPATH=/opt/arena \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    OPENBLAS_NUM_THREADS=1 \
     HOME=/tmp
 USER 65534:65534
 ENTRYPOINT ["python", "-m", "poker_arena._sandbox_worker"]

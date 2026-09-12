@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 from pathlib import Path
 
-from .types import Bot
+from .bots import CallBot, RandomBot
+from .match import play_match
+from .sandbox import SandboxedBot, SandboxError
+from .types import Bot, IllegalAction
+
+CHECK_HANDS = 25
 
 
 class BotLoadError(Exception):
     """A submitted bot script could not be loaded into a valid, working Bot."""
+
+
+def check_submission(source: str) -> str:
+    """Play short sandboxed matches from both seats; returns the bot's name or raises BotLoadError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "bot.py"
+        path.write_text(source)
+        try:
+            with SandboxedBot(path, pace=0) as bot:
+                play_match([bot, RandomBot()], seed=0, hands=CHECK_HANDS)
+                play_match([CallBot(), bot], seed=1, hands=CHECK_HANDS)
+                return bot.name
+        except (SandboxError, IllegalAction) as exc:
+            raise BotLoadError(str(exc)) from exc
 
 
 def load_bot(path: str | Path) -> Bot:

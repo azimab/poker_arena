@@ -3,9 +3,11 @@ import json
 import os
 import pathlib
 import sys
-from datetime import datetime, timezone
+import tempfile
 
-from poker_arena import DEFAULT_CONFIG, IllegalAction, SandboxError, SandboxedBot, play_match
+from psycopg.types.json import Jsonb
+
+from poker_arena import DEFAULT_CONFIG, IllegalAction, SandboxError, SandboxedBot, db, play_match, rating
 from poker_arena.sandbox import IMAGE, image_exists
 
 HANDS = int(os.environ.get("ARENA_HANDS", 100))
@@ -47,57 +49,60 @@ def play(paths: tuple[pathlib.Path, pathlib.Path]) -> dict:
             "hands": len(result.hands),
         }
     except (Forfeit, IllegalAction) as exc:
-        return {"error": str(exc).splitlines()[0], "forfeit": exc.seat}
+        return {
+            "error": str(exc).splitlines()[0],
+            "forfeit": exc.seat,
+            "deltas": [-START if seat == exc.seat else START for seat in range(2)],
+        }
     finally:
         for bot in bots:
             bot.close()
 
 
-def main(submissions: pathlib.Path, results: pathlib.Path) -> int:
-    paths = sorted(submissions.glob("*.py"))
-    if len(paths) < 2:
-        print(f"need at least 2 submissions in {submissions}", file=sys.stderr)
-        return 1
+def record(a: int, b: int, score: int, legs: list[dict]) -> None:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, mu, sigma FROM bots WHERE id = ANY(%s) FOR UPDATE", ([a, b],)
+        ).fetchall()
+        current = {r["id"]: (r["mu"], r["sigma"]) for r in rows}
+        for bot_id, (mu, sigma) in zip((a, b), rating.rate(current[a], current[b], score)):
+            conn.execute("UPDATE bots SET mu = %s, sigma = %s WHERE id = %s", (mu, sigma, bot_id))
+        conn.execute(
+            "INSERT INTO matches (bot_a, bot_b, score, legs) VALUES (%s, %s, %s, %s)",
+            (a, b, score, Jsonb(legs)),
+        )
+
+
+def main() -> int:
     # Checked up front so a missing image or dead daemon aborts the run instead
     # of being blamed on whichever bot happened to load first.
     if not image_exists():
         print(f"sandbox image {IMAGE!r} is unavailable (is docker running?)", file=sys.stderr)
         return 1
+    with db.connect() as conn:
+        bots = conn.execute("SELECT id, source FROM bots WHERE status = 'active' ORDER BY id").fetchall()
+    if len(bots) < 2:
+        print("need at least 2 active bots", file=sys.stderr)
+        return 1
 
-    standings = {p.stem: 0 for p in paths}
-    pairings = []
-    for a, b in itertools.combinations(paths, 2):
-        # Each pairing is played twice on the same seed with seats swapped, so
-        # both bots are dealt the same cards and card luck largely cancels out.
-        legs = []
-        for order in ((a, b), (b, a)):
-            outcome = play(order) | {"bots": [p.stem for p in order]}
-            if "deltas" in outcome:
-                for path, delta in zip(order, outcome["deltas"]):
-                    standings[path.stem] += delta
-            else:
-                standings[order[outcome["forfeit"]].stem] -= START
-            legs.append(outcome)
-            print(json.dumps(outcome), flush=True)
-        pairings.append({"bots": [a.stem, b.stem], "legs": legs})
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = {}
+        for bot in bots:
+            paths[bot["id"]] = pathlib.Path(tmp) / f"{bot['id']}.py"
+            paths[bot["id"]].write_text(bot["source"])
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    results.mkdir(parents=True, exist_ok=True)
-    (results / f"{stamp}.json").write_text(
-        json.dumps(
-            {
-                "finished": stamp,
-                "hands": HANDS,
-                "pace": PACE,
-                "seed": SEED,
-                "standings": sorted(standings.items(), key=lambda kv: -kv[1]),
-                "pairings": pairings,
-            },
-            indent=2,
-        )
-    )
+        for a, b in itertools.combinations(paths, 2):
+            # Each pairing is played twice on the same seed with seats swapped, so
+            # both bots are dealt the same cards and card luck largely cancels out.
+            legs, score = [], 0
+            for order in ((a, b), (b, a)):
+                outcome = play((paths[order[0]], paths[order[1]])) | {"bots": list(order)}
+                score += outcome["deltas"][order.index(a)]
+                legs.append(outcome)
+                print(json.dumps(outcome), flush=True)
+            record(a, b, score, legs)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])))
+    sys.exit(main())

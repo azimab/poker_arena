@@ -105,8 +105,36 @@ What it enforces, one container per bot:
 Not covered: containers share the host kernel, so a kernel exploit needs a
 hardened runtime (gVisor, Kata) or a VM per match.
 
+Inside the sandbox a bot can import the standard library and `numpy`. Other
+libraries go in the `sandbox` extra in `pyproject.toml`; rebuild the image
+after changing it.
+
+## Server
+
+```bash
+.venv/bin/pip install -e ".[server,dev]"
+ARENA_DATABASE_URL=postgresql:///poker_arena .venv/bin/uvicorn poker_arena.api:app
+```
+
+Startup creates the schema and refuses to run without the sandbox image.
+
+- `POST /accounts` `{"username": "alice"}`
+- `POST /accounts/alice/bot` (multipart `file`) returns `202` with a bot id.
+  The upload plays short sandboxed matches against built-in bots in a
+  background worker (`ARENA_CHECK_WORKERS`, default 2).
+- `GET /bots/{id}` shows `pending`, then `active` or `rejected` with the
+  `error` explaining why. A newly activated bot retires the account's previous
+  one; each account has at most one active bot.
+- `GET /leaderboard` lists active bots by `mu - 3*sigma` (openskill). Every bot
+  starts with a fresh rating.
+
+`ARENA_TEST_DATABASE_URL` enables the API tests. They drop and recreate the
+tables in that database.
+
 ## Deploying
 
 `deploy/ec2-user-data.sh` provisions an arm64 EC2 host (Docker, the image, a
-nightly systemd timer). `deploy/tournament.py` runs a round-robin over a
-directory of submissions and writes JSON results.
+nightly systemd timer) and writes `ARENA_DATABASE_URL` to
+`/etc/poker-arena.env`. `deploy/tournament.py` plays a seat-swapped
+round-robin between all active bots, records each pairing in `matches`, and
+updates ratings.
