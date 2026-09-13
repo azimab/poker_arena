@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>poker-arena</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+</head>
+<body x-data="arena()" x-init="init()">
+  <nav>
+    <strong>poker-arena</strong>
+    <a href="#/">leaderboard</a>
+    <a href="#/bots">bots</a>
+    <a href="#/tournaments">tournaments</a>
+    <template x-if="user">
+      <span>
+        <a href="#/submit">my bots</a>
+        <a href="#/play">play</a>
+      </span>
+    </template>
+    <span class="right">
+      <template x-if="user">
+        <span><span x-text="user"></span> <button @click="logout()">log out</button></span>
+      </template>
+      <template x-if="!user">
+        <a href="/login">log in with GitHub</a>
+      </template>
+    </span>
+  </nav>
+
+  <main>
+    <p class="error" x-show="error" x-text="error"></p>
+
+    <template x-if="route === 'leaderboard'">
+      <section>
+        <h2>Leaderboard</h2>
+        <table>
+          <tr><th>#</th><th>user</th><th>bot</th><th>rating</th><th>mu</th><th>sigma</th></tr>
+          <template x-for="(row, i) in data ?? []" :key="row.bot_id">
+            <tr>
+              <td x-text="i + 1"></td>
+              <td x-text="row.username"></td>
+              <td><a :href="'#/bots/' + row.bot_id" x-text="row.name"></a></td>
+              <td x-text="row.rating.toFixed(2)"></td>
+              <td x-text="row.mu.toFixed(2)"></td>
+              <td x-text="row.sigma.toFixed(2)"></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'bots'">
+      <section>
+        <h2>Bots</h2>
+        <label>status
+          <select :value="statusFilter" @change="statusFilter = $event.target.value; load()">
+            <option value="">any</option>
+            <option>active</option><option>pending</option><option>rejected</option><option>retired</option>
+          </select>
+        </label>
+        <table>
+          <tr><th>id</th><th>user</th><th>name</th><th>status</th><th>submitted</th></tr>
+          <template x-for="bot in data ?? []" :key="bot.id">
+            <tr>
+              <td><a :href="'#/bots/' + bot.id" x-text="bot.id"></a></td>
+              <td x-text="bot.username"></td>
+              <td x-text="bot.name ?? '-'"></td>
+              <td x-text="bot.status"></td>
+              <td x-text="date(bot.created_at)"></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'bot' && data">
+      <section>
+        <h2>Bot #<span x-text="data.id"></span></h2>
+        <dl>
+          <dt>user</dt><dd x-text="data.username"></dd>
+          <dt>name</dt><dd x-text="data.name ?? '-'"></dd>
+          <dt>status</dt><dd x-text="data.status"></dd>
+          <dt>mu / sigma</dt><dd x-text="data.mu.toFixed(2) + ' / ' + data.sigma.toFixed(2)"></dd>
+          <dt>submitted</dt><dd x-text="date(data.created_at)"></dd>
+        </dl>
+        <pre class="error" x-show="data.error" x-text="data.error"></pre>
+      </section>
+    </template>
+
+    <template x-if="route === 'tournaments'">
+      <section>
+        <h2>Tournaments</h2>
+        <table>
+          <tr><th>id</th><th>started</th><th>finished</th><th>hands</th><th>matches</th></tr>
+          <template x-for="t in data ?? []" :key="t.id">
+            <tr>
+              <td><a :href="'#/tournaments/' + t.id" x-text="t.id"></a></td>
+              <td x-text="date(t.started_at)"></td>
+              <td x-text="t.finished_at ? date(t.finished_at) : 'running'"></td>
+              <td x-text="t.hands"></td>
+              <td x-text="t.matches"></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'tournament' && data">
+      <section>
+        <h2>Tournament #<span x-text="data.id"></span></h2>
+        <p>
+          <span x-text="data.hands"></span> hands per leg, seed <span x-text="data.seed"></span>,
+          started <span x-text="date(data.started_at)"></span>
+        </p>
+        <h3>Standings</h3>
+        <table>
+          <tr><th>user</th><th>bot</th><th>score</th><th>W</th><th>L</th><th>matches</th></tr>
+          <template x-for="s in data.standings" :key="s.bot_id">
+            <tr>
+              <td x-text="s.username"></td>
+              <td><a :href="'#/bots/' + s.bot_id" x-text="s.name"></a></td>
+              <td x-text="s.score"></td>
+              <td x-text="s.wins"></td>
+              <td x-text="s.losses"></td>
+              <td x-text="s.matches"></td>
+            </tr>
+          </template>
+        </table>
+        <h3>Matches</h3>
+        <table>
+          <tr><th>id</th><th>bot A</th><th>bot B</th><th>score (A)</th></tr>
+          <template x-for="m in data.matches" :key="m.id">
+            <tr>
+              <td><a :href="'#/matches/' + m.id" x-text="m.id"></a></td>
+              <td x-text="m.bot_a_username + '/' + m.bot_a_name"></td>
+              <td x-text="m.bot_b_username + '/' + m.bot_b_name"></td>
+              <td x-text="m.score"></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'match' && data">
+      <section>
+        <h2>Match #<span x-text="data.id"></span></h2>
+        <p>
+          <a :href="'#/bots/' + data.bot_a" x-text="data.bot_a_username + '/' + data.bot_a_name"></a>
+          vs
+          <a :href="'#/bots/' + data.bot_b" x-text="data.bot_b_username + '/' + data.bot_b_name"></a>
+          &mdash; score <strong x-text="data.score"></strong> for A
+          (<a :href="'#/tournaments/' + data.tournament_id">tournament</a>)
+        </p>
+        <table>
+          <tr><th>leg</th><th>seat 0</th><th>seat 1</th><th>chips</th><th>hands</th><th>note</th></tr>
+          <template x-for="(leg, i) in data.legs" :key="i">
+            <tr>
+              <td x-text="i + 1"></td>
+              <td x-text="botLabel(leg.bots?.[0])"></td>
+              <td x-text="botLabel(leg.bots?.[1])"></td>
+              <td x-text="leg.deltas.join(' / ')"></td>
+              <td x-text="leg.hands ?? '-'"></td>
+              <td x-text="leg.error ? 'seat ' + leg.forfeit + ' forfeit: ' + leg.error : ''"></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'submit'">
+      <section>
+        <h2>My bots</h2>
+        <form @submit.prevent="upload($refs.file)">
+          <input type="file" accept=".py" x-ref="file" required>
+          <button :disabled="busy">submit</button>
+        </form>
+        <p>Upload a Python file defining <code>create_bot()</code>. It is checked in a sandbox before going live.</p>
+        <table>
+          <tr><th>id</th><th>name</th><th>status</th><th>submitted</th><th>error</th></tr>
+          <template x-for="bot in [...(data ?? [])].reverse()" :key="bot.id">
+            <tr>
+              <td><a :href="'#/bots/' + bot.id" x-text="bot.id"></a></td>
+              <td x-text="bot.name ?? '-'"></td>
+              <td x-text="bot.status"></td>
+              <td x-text="date(bot.created_at)"></td>
+              <td><pre class="error" x-text="bot.error ?? ''"></pre></td>
+            </tr>
+          </template>
+        </table>
+      </section>
+    </template>
+
+    <template x-if="route === 'play'">
+      <section>
+        <h2>Play</h2>
+        <template x-if="!game || game.status === 'over'">
+          <form @submit.prevent="startGame()">
+            <p x-show="game?.status === 'over'">
+              Game over after <span x-text="game?.hands"></span> hands:
+              you <span x-text="game?.stacks[0]"></span>, opponent <span x-text="game?.stacks[1]"></span>
+              <span x-show="game?.error" x-text="'(' + game?.error + ')'"></span>
+            </p>
+            <label>opponent
+              <select x-model="opponent">
+                <option value="builtin:call">built-in: call</option>
+                <option value="builtin:random">built-in: random</option>
+                <option value="builtin:fold">built-in: fold</option>
+                <template x-for="bot in data ?? []" :key="bot.id">
+                  <option :value="'bot:' + bot.id" x-text="bot.username + '/' + bot.name"></option>
+                </template>
+              </select>
+            </label>
+            <button :disabled="busy">start game</button>
+          </form>
+        </template>
+
+        <template x-if="game && game.status !== 'over'">
+          <div>
+            <p>
+              vs <strong x-text="game.opponent"></strong>
+              &mdash; hand <span x-text="game.hands + 1"></span>/<span x-text="game.max_hands"></span>
+              <button @click="quitGame()">quit</button>
+            </p>
+            <p x-show="game.status === 'starting'">starting opponent&hellip;</p>
+            <p x-show="game.status === 'thinking'">opponent is thinking&hellip;</p>
+
+            <template x-if="game.observation">
+              <div class="table">
+                <p>
+                  opponent: <span x-text="obs.stacks[1]"></span> chips
+                  <span x-show="obs.button === 1">(button)</span>,
+                  bet <span x-text="obs.street_bets[1]"></span>
+                </p>
+                <p class="cards">
+                  board:
+                  <template x-for="c in obs.board"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+                  <span x-show="!obs.board.length">&mdash;</span>
+                  &nbsp; pot <strong x-text="obs.pot"></strong> (<span x-text="obs.street"></span>)
+                </p>
+                <p class="cards">
+                  you:
+                  <template x-for="c in obs.hole"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+                  <span x-text="obs.stacks[0]"></span> chips
+                  <span x-show="obs.button === 0">(button)</span>,
+                  bet <span x-text="obs.street_bets[0]"></span>
+                </p>
+                <div class="actions">
+                  <button @click="act('fold')">fold</button>
+                  <button x-show="obs.can_check" @click="act('check')">check</button>
+                  <button x-show="!obs.can_check" @click="act('call')" x-text="'call ' + obs.to_call"></button>
+                  <template x-if="obs.can_raise">
+                    <span>
+                      <input type="range" :min="obs.min_raise_to" :max="obs.max_raise_to" :step="obs.bb / 2" x-model.number="raiseTo">
+                      <input type="number" :min="obs.min_raise_to" :max="obs.max_raise_to" x-model.number="raiseTo">
+                      <button @click="act('raise', raiseTo)" x-text="'raise to ' + raiseTo"></button>
+                    </span>
+                  </template>
+                </div>
+                <ol class="history">
+                  <template x-for="h in obs.history">
+                    <li x-text="h.street + ': ' + (h.seat === 0 ? 'you' : 'opponent') + ' ' + h.type + (h.amount ? ' ' + h.amount : '')"></li>
+                  </template>
+                </ol>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <template x-if="game?.last_hand">
+          <div class="last-hand">
+            <h3>Last hand</h3>
+            <p x-text="handSummary(game.last_hand)"></p>
+            <p class="cards">
+              you:
+              <template x-for="c in game.last_hand.holes[0]"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+              opponent:
+              <template x-for="c in game.last_hand.holes[1] ?? ['??', '??']"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+              board:
+              <template x-for="c in game.last_hand.board"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+            </p>
+          </div>
+        </template>
+      </section>
+    </template>
+  </main>
+</body>
+</html>

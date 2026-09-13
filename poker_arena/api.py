@@ -5,6 +5,7 @@ import os
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
 
@@ -14,19 +15,23 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 # auth reads the GitHub credentials at import, so this has to run first.
 load_dotenv()
 
-from . import auth, db
+from . import auth, db, games
 from .sandbox import IMAGE, MAX_SOURCE_BYTES, image_exists
 from .submission import BotLoadError, check_submission
+from .types import Action, ActionType
 
 log = logging.getLogger(__name__)
 checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
 LOGIN_REDIRECT = os.environ.get("ARENA_LOGIN_REDIRECT")
+active_games: dict[int, games.Game] = {}
 
 
 @asynccontextmanager
@@ -289,3 +294,65 @@ def leaderboard(conn: psycopg.Connection = Depends(get_conn)):
         "FROM bots b JOIN accounts a ON a.id = b.account_id "
         "WHERE b.status = 'active' ORDER BY rating DESC"
     ).fetchall()
+
+
+class NewGame(BaseModel):
+    opponent: Literal["call", "fold", "random"] | None = None
+    bot_id: int | None = None
+
+
+class GameAction(BaseModel):
+    type: ActionType
+    amount: int = 0
+
+
+def account_game(account) -> games.Game:
+    game = active_games.get(account["id"])
+    if game is None:
+        raise HTTPException(404, "no game in progress")
+    return game
+
+
+@app.post("/game", status_code=201)
+def new_game(body: NewGame, account=Depends(current_account), conn: psycopg.Connection = Depends(get_conn)):
+    if (body.opponent is None) == (body.bot_id is None):
+        raise HTTPException(422, "choose exactly one of opponent or bot_id")
+    if body.bot_id is None:
+        game = games.Game(body.opponent)
+    else:
+        bot = conn.execute(
+            "SELECT b.name, b.source, a.username FROM bots b JOIN accounts a ON a.id = b.account_id "
+            "WHERE b.id = %s AND b.status = 'active'",
+            (body.bot_id,),
+        ).fetchone()
+        if bot is None:
+            raise HTTPException(404, "no active bot with that id")
+        game = games.Game(f"{bot['username']}/{bot['name']}", bot["source"])
+    old = active_games.get(account["id"])
+    if old is not None:
+        old.quit()
+    active_games[account["id"]] = game
+    return game.state()
+
+
+@app.get("/game")
+def get_game(account=Depends(current_account)):
+    return account_game(account).state()
+
+
+@app.post("/game/action")
+def game_action(body: GameAction, account=Depends(current_account)):
+    game = account_game(account)
+    try:
+        game.submit(Action(body.type, body.amount))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return game.state()
+
+
+@app.delete("/game", status_code=204)
+def quit_game(account=Depends(current_account)):
+    account_game(account).quit(wait=10)
+
+
+app.mount("/", StaticFiles(directory=Path(__file__).with_name("web"), html=True), name="web")

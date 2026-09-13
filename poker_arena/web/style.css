@@ -1,0 +1,17 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
+nav { display: flex; gap: 1rem; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+nav span { display: inline-flex; gap: 1rem; align-items: center; }
+nav .right { margin-left: auto; }
+main { padding: 1rem; max-width: 60rem; }
+table { border-collapse: collapse; margin: 0.5rem 0; }
+th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; border-bottom: 1px solid #eee; vertical-align: top; }
+pre { margin: 0; white-space: pre-wrap; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
+dd { margin: 0; }
+.error { color: #b00; }
+.cards { font-size: 1.1rem; }
+.card { display: inline-block; min-width: 2.2rem; padding: 0.1rem 0.3rem; margin-right: 0.25rem; border: 1px solid #999; border-radius: 4px; text-align: center; background: #fff; }
+.red { color: #c00; }
+.actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.actions input[type=number] { width: 6rem; }
+.history { color: #555; }

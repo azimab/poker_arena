@@ -211,6 +211,28 @@ def test_bot_list_and_tournament_results(client):
     assert client.get("/matches/999999").status_code == 404
 
 
+def test_play_against_builtin_bot(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {login(client, monkeypatch, 'judy')}"}
+    assert client.get("/game", headers=headers).status_code == 404
+    assert client.post("/game", json={}, headers=headers).status_code == 422
+
+    client.post("/game", json={"opponent": "fold"}, headers=headers)
+    for _ in range(100):
+        game = client.get("/game", headers=headers).json()
+        if game["status"] == "your_turn":
+            break
+        time.sleep(0.01)
+    obs = game["observation"]
+    assert client.post("/game/action", json={"type": "raise", "amount": 1}, headers=headers).status_code == 409
+
+    game = client.post("/game/action", json={"type": "raise", "amount": obs["min_raise_to"]}, headers=headers).json()
+    assert game["hands"] == 1 and game["last_hand"]["holes"][1] is None
+    assert game["stacks"] == [10_000 + obs["bb"], 10_000 - obs["bb"]]
+
+    assert client.delete("/game", headers=headers).status_code == 204
+    assert client.get("/game", headers=headers).json()["status"] == "over"
+
+
 def test_rate_moves_winner_up_and_draw_is_symmetric():
     (wa, _), (lb, _) = rate((25.0, 8.0), (25.0, 8.0), score=100)
     assert wa > 25.0 > lb
