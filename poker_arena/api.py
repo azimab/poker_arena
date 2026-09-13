@@ -14,7 +14,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from dotenv import load_dotenv
 from starlette.middleware.sessions import SessionMiddleware
+
+# auth reads the GitHub credentials at import, so this has to run first.
+load_dotenv()
 
 from . import auth, db
 from .sandbox import IMAGE, MAX_SOURCE_BYTES, image_exists

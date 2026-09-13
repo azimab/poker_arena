@@ -5,10 +5,13 @@ import pathlib
 import sys
 import tempfile
 
+from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
 from poker_arena import DEFAULT_CONFIG, IllegalAction, SandboxError, SandboxedBot, db, play_match, rating
 from poker_arena.sandbox import IMAGE, image_exists
+
+load_dotenv()
 
 HANDS = int(os.environ.get("ARENA_HANDS", 100))
 PACE = float(os.environ.get("ARENA_PACE", 1.0))

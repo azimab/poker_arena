@@ -59,7 +59,8 @@ def client():
     os.environ["ARENA_DATABASE_URL"] = DB_URL
     with db.connect() as conn:
         conn.execute("DROP TABLE IF EXISTS matches, tournaments, bots, sessions, accounts")
-    with TestClient(app) as client:
+    with pytest.MonkeyPatch.context() as mp, TestClient(app) as client:
+        mp.setattr(api, "LOGIN_REDIRECT", None)
         yield client
 
 
