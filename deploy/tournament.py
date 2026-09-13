@@ -59,7 +59,7 @@ def play(paths: tuple[pathlib.Path, pathlib.Path]) -> dict:
             bot.close()
 
 
-def record(a: int, b: int, score: int, legs: list[dict]) -> None:
+def record(tournament_id: int, a: int, b: int, score: int, legs: list[dict]) -> None:
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT id, mu, sigma FROM bots WHERE id = ANY(%s) FOR UPDATE", ([a, b],)
@@ -68,8 +68,8 @@ def record(a: int, b: int, score: int, legs: list[dict]) -> None:
         for bot_id, (mu, sigma) in zip((a, b), rating.rate(current[a], current[b], score)):
             conn.execute("UPDATE bots SET mu = %s, sigma = %s WHERE id = %s", (mu, sigma, bot_id))
         conn.execute(
-            "INSERT INTO matches (bot_a, bot_b, score, legs) VALUES (%s, %s, %s, %s)",
-            (a, b, score, Jsonb(legs)),
+            "INSERT INTO matches (tournament_id, bot_a, bot_b, score, legs) VALUES (%s, %s, %s, %s, %s)",
+            (tournament_id, a, b, score, Jsonb(legs)),
         )
 
 
@@ -84,6 +84,10 @@ def main() -> int:
     if len(bots) < 2:
         print("need at least 2 active bots", file=sys.stderr)
         return 1
+    with db.connect() as conn:
+        tournament_id = conn.execute(
+            "INSERT INTO tournaments (hands, seed) VALUES (%s, %s) RETURNING id", (HANDS, SEED)
+        ).fetchone()["id"]
 
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
@@ -100,7 +104,10 @@ def main() -> int:
                 score += outcome["deltas"][order.index(a)]
                 legs.append(outcome)
                 print(json.dumps(outcome), flush=True)
-            record(a, b, score, legs)
+            record(tournament_id, a, b, score, legs)
+
+    with db.connect() as conn:
+        conn.execute("UPDATE tournaments SET finished_at = now() WHERE id = %s", (tournament_id,))
     return 0
 
 

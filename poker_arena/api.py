@@ -5,6 +5,7 @@ import os
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import psycopg
 from authlib.integrations.starlette_client import OAuthError
@@ -179,16 +180,85 @@ def submit_bot(
     return bot
 
 
+BOT_SELECT = (
+    "SELECT b.id, a.username, b.name, b.status, b.error, b.mu, b.sigma, b.created_at "
+    "FROM bots b JOIN accounts a ON a.id = b.account_id "
+)
+
+
+@app.get("/bots")
+def list_bots(
+    username: str | None = None,
+    status: Literal["pending", "active", "rejected", "retired"] | None = None,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    return conn.execute(
+        BOT_SELECT + "WHERE (%(username)s::text IS NULL OR a.username = %(username)s) "
+        "AND (%(status)s::text IS NULL OR b.status = %(status)s) ORDER BY b.id",
+        {"username": username, "status": status},
+    ).fetchall()
+
+
 @app.get("/bots/{bot_id}")
 def get_bot(bot_id: int, conn: psycopg.Connection = Depends(get_conn)):
-    bot = conn.execute(
-        "SELECT b.id, a.username, b.name, b.status, b.error, b.mu, b.sigma, b.created_at "
-        "FROM bots b JOIN accounts a ON a.id = b.account_id WHERE b.id = %s",
-        (bot_id,),
-    ).fetchone()
+    bot = conn.execute(BOT_SELECT + "WHERE b.id = %s", (bot_id,)).fetchone()
     if bot is None:
         raise HTTPException(404, "bot not found")
     return bot
+
+
+@app.get("/tournaments")
+def list_tournaments(conn: psycopg.Connection = Depends(get_conn)):
+    return conn.execute(
+        "SELECT t.id, t.hands, t.seed, t.started_at, t.finished_at, count(m.id) AS matches "
+        "FROM tournaments t LEFT JOIN matches m ON m.tournament_id = t.id "
+        "GROUP BY t.id ORDER BY t.id DESC"
+    ).fetchall()
+
+
+@app.get("/tournaments/{tournament_id}")
+def get_tournament(tournament_id: int, conn: psycopg.Connection = Depends(get_conn)):
+    tournament = conn.execute(
+        "SELECT id, hands, seed, started_at, finished_at FROM tournaments WHERE id = %s",
+        (tournament_id,),
+    ).fetchone()
+    if tournament is None:
+        raise HTTPException(404, "tournament not found")
+    tournament["standings"] = conn.execute(
+        "SELECT s.bot_id, a.username, b.name, sum(s.score) AS score, count(*) AS matches, "
+        "count(*) FILTER (WHERE s.score > 0) AS wins, count(*) FILTER (WHERE s.score < 0) AS losses "
+        "FROM (SELECT bot_a AS bot_id, score FROM matches WHERE tournament_id = %(id)s "
+        "      UNION ALL SELECT bot_b, -score FROM matches WHERE tournament_id = %(id)s) s "
+        "JOIN bots b ON b.id = s.bot_id JOIN accounts a ON a.id = b.account_id "
+        "GROUP BY s.bot_id, a.username, b.name ORDER BY score DESC",
+        {"id": tournament_id},
+    ).fetchall()
+    tournament["matches"] = conn.execute(
+        f"SELECT {MATCH_COLUMNS} {MATCH_JOINS} WHERE m.tournament_id = %s ORDER BY m.id",
+        (tournament_id,),
+    ).fetchall()
+    return tournament
+
+
+MATCH_COLUMNS = (
+    "m.id, m.tournament_id, m.bot_a, ba.name AS bot_a_name, aa.username AS bot_a_username, "
+    "m.bot_b, bb.name AS bot_b_name, ab.username AS bot_b_username, m.score, m.played_at"
+)
+MATCH_JOINS = (
+    "FROM matches m "
+    "JOIN bots ba ON ba.id = m.bot_a JOIN accounts aa ON aa.id = ba.account_id "
+    "JOIN bots bb ON bb.id = m.bot_b JOIN accounts ab ON ab.id = bb.account_id"
+)
+
+
+@app.get("/matches/{match_id}")
+def get_match(match_id: int, conn: psycopg.Connection = Depends(get_conn)):
+    match = conn.execute(
+        f"SELECT {MATCH_COLUMNS}, m.legs {MATCH_JOINS} WHERE m.id = %s", (match_id,)
+    ).fetchone()
+    if match is None:
+        raise HTTPException(404, "match not found")
+    return match
 
 
 @app.get("/leaderboard")

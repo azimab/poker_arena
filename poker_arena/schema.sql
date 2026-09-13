@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS bots (
 
 CREATE UNIQUE INDEX IF NOT EXISTS bots_one_active_per_account ON bots (account_id) WHERE status = 'active';
 
+CREATE TABLE IF NOT EXISTS tournaments (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    hands integer NOT NULL,
+    seed bigint NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS matches (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     bot_a bigint NOT NULL REFERENCES bots (id),
@@ -35,3 +43,5 @@ CREATE TABLE IF NOT EXISTS matches (
     legs jsonb NOT NULL,
     played_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS tournament_id bigint REFERENCES tournaments (id);

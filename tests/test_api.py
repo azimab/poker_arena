@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from poker_arena import auth, db
 from poker_arena.api import app
@@ -56,7 +57,7 @@ def client():
         build_image()
     os.environ["ARENA_DATABASE_URL"] = DB_URL
     with db.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS matches, bots, sessions, accounts")
+        conn.execute("DROP TABLE IF EXISTS matches, tournaments, bots, sessions, accounts")
     with TestClient(app) as client:
         yield client
 
@@ -144,6 +145,48 @@ def test_broken_import(client, monkeypatch):
     bot = checked(client, "carol", "import pandas\n", token)
     assert bot["status"] == "rejected"
     assert "pandas" in bot["error"]
+
+
+def test_bot_list_and_tournament_results(client):
+    with db.connect() as conn:
+        bots = []
+        for username in ("frank", "grace", "heidi"):
+            account = conn.execute(
+                "INSERT INTO accounts (username) VALUES (%s) RETURNING id", (username,)
+            ).fetchone()
+            bots.append(conn.execute(
+                "INSERT INTO bots (account_id, name, source, status) VALUES (%s, %s, '', 'active') RETURNING id",
+                (account["id"], username),
+            ).fetchone()["id"])
+        tournament = conn.execute("INSERT INTO tournaments (hands, seed) VALUES (100, 1) RETURNING id").fetchone()["id"]
+        matches = [
+            conn.execute(
+                "INSERT INTO matches (tournament_id, bot_a, bot_b, score, legs) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (tournament, a, b, score, Jsonb([{"deltas": [score, -score]}])),
+            ).fetchone()["id"]
+            for a, b, score in ((bots[0], bots[1], 40), (bots[0], bots[2], -10), (bots[1], bots[2], 0))
+        ]
+
+    listed = client.get("/bots", params={"username": "frank"}).json()
+    assert [bot["id"] for bot in listed] == [bots[0]]
+    assert "source" not in listed[0]
+    assert all(bot["status"] == "active" for bot in client.get("/bots", params={"status": "active"}).json())
+    assert client.get("/bots", params={"status": "bogus"}).status_code == 422
+
+    assert client.get("/tournaments").json()[0] | {"started_at": None} == {
+        "id": tournament, "hands": 100, "seed": 1, "started_at": None, "finished_at": None, "matches": 3,
+    }
+    result = client.get(f"/tournaments/{tournament}").json()
+    assert [(s["username"], s["score"], s["wins"], s["losses"]) for s in result["standings"]] == [
+        ("frank", 30, 1, 1), ("heidi", 10, 1, 0), ("grace", -40, 0, 1),
+    ]
+    assert [m["id"] for m in result["matches"]] == matches
+
+    match = client.get(f"/matches/{matches[0]}").json()
+    assert (match["bot_a_username"], match["bot_b_username"], match["score"]) == ("frank", "grace", 40)
+    assert match["legs"] == [{"deltas": [40, -40]}]
+    assert client.get("/tournaments/999999").status_code == 404
+    assert client.get("/matches/999999").status_code == 404
 
 
 def test_rate_moves_winner_up_and_draw_is_symmetric():
