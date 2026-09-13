@@ -6,3 +6,4 @@ Dockerfile
 deploy
 results
 submissions
+.env

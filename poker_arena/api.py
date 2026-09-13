@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from authlib.integrations.starlette_client import OAuthError
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.middleware.sessions import SessionMiddleware
 
-from . import db
+from . import auth, db
 from .sandbox import IMAGE, MAX_SOURCE_BYTES, image_exists
 from .submission import BotLoadError, check_submission
 
@@ -24,17 +28,43 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"sandbox image {IMAGE!r} is unavailable (is docker running?)")
     with db.connect() as conn:
         db.init_schema(conn)
+        conn.execute("DELETE FROM sessions WHERE expires_at <= now()")
         for bot in conn.execute("SELECT id, source FROM bots WHERE status = 'pending' ORDER BY id"):
             checks.submit(run_check, bot["id"], bot["source"])
     yield
 
 
 app = FastAPI(title="poker-arena", lifespan=lifespan)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("ARENA_SECRET_KEY") or secrets.token_hex(32),
+    max_age=600,
+)
 
 
 def get_conn():
     with db.connect() as conn:
         yield conn
+
+
+bearer = HTTPBearer(auto_error=False)
+
+
+def token_hash(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> bytes:
+    if credentials is None:
+        raise HTTPException(401, "not authenticated", headers={"WWW-Authenticate": "Bearer"})
+    return auth.hash_token(credentials.credentials)
+
+
+def current_account(token_hash: bytes = Depends(token_hash), conn: psycopg.Connection = Depends(get_conn)):
+    account = conn.execute(
+        "SELECT a.id, a.username FROM sessions s JOIN accounts a ON a.id = s.account_id "
+        "WHERE s.token_hash = %s AND s.expires_at > now()",
+        (token_hash,),
+    ).fetchone()
+    if account is None:
+        raise HTTPException(401, "invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
+    return account
 
 
 def run_check(bot_id: int, source: str) -> None:
@@ -80,26 +110,55 @@ def _run_check(bot_id: int, source: str) -> None:
         )
 
 
-class NewAccount(BaseModel):
-    username: str = Field(pattern=r"^[A-Za-z0-9_-]{3,32}$")
+@app.get("/login")
+async def login(request: Request):
+    return await auth.oauth.github.authorize_redirect(request, request.url_for("github_callback"))
 
 
-@app.post("/accounts", status_code=201)
-def create_account(body: NewAccount, conn: psycopg.Connection = Depends(get_conn)):
+@app.get("/auth/github/callback")
+async def github_callback(request: Request):
     try:
-        return conn.execute(
-            "INSERT INTO accounts (username) VALUES (%s) RETURNING id, username, created_at",
-            (body.username,),
-        ).fetchone()
-    except psycopg.errors.UniqueViolation:
-        raise HTTPException(409, "username is taken")
+        token = await auth.oauth.github.authorize_access_token(request)
+    except OAuthError as exc:
+        raise HTTPException(400, f"github login failed: {exc.description or exc.error}")
+    user = await auth.oauth.github.userinfo(token=token)
+    return await run_in_threadpool(start_session, user["id"], user["login"])
+
+
+def start_session(github_id: int, login: str) -> dict:
+    with db.connect() as conn:
+        try:
+            account = conn.execute(
+                "INSERT INTO accounts (username, github_id) VALUES (%s, %s) "
+                "ON CONFLICT (github_id) DO UPDATE SET github_id = EXCLUDED.github_id "
+                "RETURNING id, username",
+                (login, github_id),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(409, f"username {login!r} is taken by another account")
+        token, token_hash = auth.new_token()
+        conn.execute(
+            "INSERT INTO sessions (token_hash, account_id, expires_at) "
+            "VALUES (%s, %s, now() + %s::interval)",
+            (token_hash, account["id"], auth.SESSION_TTL),
+        )
+    return {"username": account["username"], "access_token": token, "token_type": "bearer"}
+
+
+@app.post("/logout", status_code=204)
+def logout(token_hash: bytes = Depends(token_hash), conn: psycopg.Connection = Depends(get_conn)):
+    conn.execute("DELETE FROM sessions WHERE token_hash = %s", (token_hash,))
 
 
 @app.post("/accounts/{username}/bot", status_code=202)
-def submit_bot(username: str, file: UploadFile, conn: psycopg.Connection = Depends(get_conn)):
-    account = conn.execute("SELECT id FROM accounts WHERE username = %s", (username,)).fetchone()
-    if account is None:
-        raise HTTPException(404, "account not found")
+def submit_bot(
+    username: str,
+    file: UploadFile,
+    account=Depends(current_account),
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    if account["username"] != username:
+        raise HTTPException(403, "cannot submit bots for another account")
 
     raw = file.file.read(MAX_SOURCE_BYTES + 1)
     if len(raw) > MAX_SOURCE_BYTES:

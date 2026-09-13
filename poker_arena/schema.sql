@@ -4,6 +4,14 @@ CREATE TABLE IF NOT EXISTS accounts (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS github_id bigint UNIQUE;
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash bytea PRIMARY KEY,
+    account_id bigint NOT NULL REFERENCES accounts (id),
+    expires_at timestamptz NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS bots (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     account_id bigint NOT NULL REFERENCES accounts (id),

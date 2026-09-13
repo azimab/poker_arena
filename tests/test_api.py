@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import time
+import zlib
 
 import pytest
 
@@ -9,7 +10,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-from poker_arena import db
+from poker_arena import auth, db
 from poker_arena.api import app
 from poker_arena.rating import rate
 from poker_arena.sandbox import build_image, image_exists
@@ -55,17 +56,38 @@ def client():
         build_image()
     os.environ["ARENA_DATABASE_URL"] = DB_URL
     with db.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS matches, bots, accounts")
+        conn.execute("DROP TABLE IF EXISTS matches, bots, sessions, accounts")
     with TestClient(app) as client:
         yield client
 
 
-def submit(client, username, source):
-    return client.post(f"/accounts/{username}/bot", files={"file": ("bot.py", source)})
+def signup(client, monkeypatch, username, github_id=None):
+    github_id = github_id or zlib.crc32(username.encode())
+
+    async def authorize_access_token(request):
+        return {"access_token": "gho_fake"}
+
+    async def userinfo(token):
+        return {"id": github_id, "login": username}
+
+    monkeypatch.setattr(auth.oauth.github, "authorize_access_token", authorize_access_token)
+    monkeypatch.setattr(auth.oauth.github, "userinfo", userinfo)
+    return client.get("/auth/github/callback")
 
 
-def checked(client, username, source):
-    response = submit(client, username, source)
+def login(client, monkeypatch, username):
+    response = signup(client, monkeypatch, username)
+    assert response.status_code == 200, response.text
+    return response.json()["access_token"]
+
+
+def submit(client, username, source, token=None):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return client.post(f"/accounts/{username}/bot", files={"file": ("bot.py", source)}, headers=headers)
+
+
+def checked(client, username, source, token):
+    response = submit(client, username, source, token)
     assert response.status_code == 202, response.text
     for _ in range(300):
         bot = client.get(f"/bots/{response.json()['id']}").json()
@@ -75,22 +97,41 @@ def checked(client, username, source):
     raise AssertionError("check did not finish")
 
 
-def test_account_usernames_are_unique(client):
-    assert client.post("/accounts", json={"username": "alice"}).status_code == 201
-    assert client.post("/accounts", json={"username": "alice"}).status_code == 409
+def test_login_redirects_to_github(client):
+    response = client.get("/login", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://github.com/login/oauth/authorize")
 
 
-def test_submission_is_checked_and_replaces_active_bot(client):
-    client.post("/accounts", json={"username": "bob"})
+def test_github_login_reuses_account_and_rejects_taken_username(client, monkeypatch):
+    first = signup(client, monkeypatch, "alice", github_id=1)
+    again = signup(client, monkeypatch, "alice", github_id=1)
+    assert first.json()["access_token"] != again.json()["access_token"]
+    assert signup(client, monkeypatch, "alice", github_id=2).status_code == 409
 
-    first = checked(client, "bob", GOOD_BOT)
+
+def test_submission_requires_owner_token(client, monkeypatch):
+    dave = login(client, monkeypatch, "dave")
+    erin = login(client, monkeypatch, "erin")
+    assert submit(client, "dave", GOOD_BOT).status_code == 401
+    assert submit(client, "dave", GOOD_BOT, "bogus").status_code == 401
+    assert submit(client, "dave", GOOD_BOT, erin).status_code == 403
+
+    assert client.post("/logout", headers={"Authorization": f"Bearer {dave}"}).status_code == 204
+    assert submit(client, "dave", GOOD_BOT, dave).status_code == 401
+
+
+def test_submission_is_checked_and_replaces_active_bot(client, monkeypatch):
+    token = login(client, monkeypatch, "bob")
+
+    first = checked(client, "bob", GOOD_BOT, token)
     assert (first["status"], first["name"]) == ("active", "numpy")
 
-    rejected = checked(client, "bob", ILLEGAL_BOT)
+    rejected = checked(client, "bob", ILLEGAL_BOT, token)
     assert rejected["status"] == "rejected"
     assert "checked facing a bet" in rejected["error"]
 
-    second = checked(client, "bob", GOOD_BOT)
+    second = checked(client, "bob", GOOD_BOT, token)
     assert second["status"] == "active"
     assert client.get(f"/bots/{first['id']}").json()["status"] == "retired"
 
@@ -98,10 +139,9 @@ def test_submission_is_checked_and_replaces_active_bot(client):
     assert [row["bot_id"] for row in board] == [second["id"]]
 
 
-def test_unknown_account_and_broken_import(client):
-    assert submit(client, "nobody", GOOD_BOT).status_code == 404
-    client.post("/accounts", json={"username": "carol"})
-    bot = checked(client, "carol", "import pandas\n")
+def test_broken_import(client, monkeypatch):
+    token = login(client, monkeypatch, "carol")
+    bot = checked(client, "carol", "import pandas\n", token)
     assert bot["status"] == "rejected"
     assert "pandas" in bot["error"]
 
