@@ -6,11 +6,13 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Literal
+from urllib.parse import urlencode
 
 import psycopg
 from authlib.integrations.starlette_client import OAuthError
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -20,6 +22,7 @@ from .submission import BotLoadError, check_submission
 
 log = logging.getLogger(__name__)
 checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
+LOGIN_REDIRECT = os.environ.get("ARENA_LOGIN_REDIRECT")
 
 
 @asynccontextmanager
@@ -119,11 +122,20 @@ async def login(request: Request):
 @app.get("/auth/github/callback")
 async def github_callback(request: Request):
     try:
-        token = await auth.oauth.github.authorize_access_token(request)
-    except OAuthError as exc:
-        raise HTTPException(400, f"github login failed: {exc.description or exc.error}")
-    user = await auth.oauth.github.userinfo(token=token)
-    return await run_in_threadpool(start_session, user["id"], user["login"])
+        try:
+            token = await auth.oauth.github.authorize_access_token(request)
+        except OAuthError as exc:
+            raise HTTPException(400, f"github login failed: {exc.description or exc.error}")
+        user = await auth.oauth.github.userinfo(token=token)
+        session = await run_in_threadpool(start_session, user["id"], user["login"])
+    except HTTPException as exc:
+        if LOGIN_REDIRECT is None:
+            raise
+        return RedirectResponse(f"{LOGIN_REDIRECT}#{urlencode({'error': exc.detail})}", 302)
+    if LOGIN_REDIRECT is None:
+        return session
+    # The fragment keeps the token out of server logs and Referer headers.
+    return RedirectResponse(f"{LOGIN_REDIRECT}#{urlencode(session)}", 302)
 
 
 def start_session(github_id: int, login: str) -> dict:

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import time
 import zlib
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 
@@ -11,7 +12,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from poker_arena import auth, db
+from poker_arena import api, auth, db
 from poker_arena.api import app
 from poker_arena.rating import rate
 from poker_arena.sandbox import build_image, image_exists
@@ -62,7 +63,7 @@ def client():
         yield client
 
 
-def signup(client, monkeypatch, username, github_id=None):
+def signup(client, monkeypatch, username, github_id=None, **kwargs):
     github_id = github_id or zlib.crc32(username.encode())
 
     async def authorize_access_token(request):
@@ -73,7 +74,7 @@ def signup(client, monkeypatch, username, github_id=None):
 
     monkeypatch.setattr(auth.oauth.github, "authorize_access_token", authorize_access_token)
     monkeypatch.setattr(auth.oauth.github, "userinfo", userinfo)
-    return client.get("/auth/github/callback")
+    return client.get("/auth/github/callback", **kwargs)
 
 
 def login(client, monkeypatch, username):
@@ -109,6 +110,22 @@ def test_github_login_reuses_account_and_rejects_taken_username(client, monkeypa
     again = signup(client, monkeypatch, "alice", github_id=1)
     assert first.json()["access_token"] != again.json()["access_token"]
     assert signup(client, monkeypatch, "alice", github_id=2).status_code == 409
+
+
+def test_github_login_redirects_to_frontend(client, monkeypatch):
+    monkeypatch.setattr(api, "LOGIN_REDIRECT", "http://frontend.test/auth/callback")
+
+    response = signup(client, monkeypatch, "ivan", github_id=10, follow_redirects=False)
+    assert response.status_code == 302
+    location = urlsplit(response.headers["location"])
+    assert location._replace(fragment="").geturl() == "http://frontend.test/auth/callback"
+    session = dict(parse_qsl(location.fragment))
+    assert (session["username"], session["token_type"]) == ("ivan", "bearer")
+    assert client.post("/logout", headers={"Authorization": f"Bearer {session['access_token']}"}).status_code == 204
+
+    taken = signup(client, monkeypatch, "ivan", github_id=11, follow_redirects=False)
+    assert taken.status_code == 302
+    assert "taken" in dict(parse_qsl(urlsplit(taken.headers["location"]).fragment))["error"]
 
 
 def test_submission_requires_owner_token(client, monkeypatch):
