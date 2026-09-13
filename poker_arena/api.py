@@ -162,6 +162,11 @@ def start_session(github_id: int, login: str) -> dict:
     return {"username": account["username"], "access_token": token, "token_type": "bearer"}
 
 
+@app.get("/me")
+def me(account=Depends(current_account)):
+    return {"username": account["username"]}
+
+
 @app.post("/logout", status_code=204)
 def logout(token_hash: bytes = Depends(token_hash), conn: psycopg.Connection = Depends(get_conn)):
     conn.execute("DELETE FROM sessions WHERE token_hash = %s", (token_hash,))

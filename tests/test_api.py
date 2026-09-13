@@ -136,8 +136,12 @@ def test_submission_requires_owner_token(client, monkeypatch):
     assert submit(client, "dave", GOOD_BOT, "bogus").status_code == 401
     assert submit(client, "dave", GOOD_BOT, erin).status_code == 403
 
+    assert client.get("/me", headers={"Authorization": f"Bearer {dave}"}).json() == {"username": "dave"}
+    assert client.get("/me").status_code == 401
+
     assert client.post("/logout", headers={"Authorization": f"Bearer {dave}"}).status_code == 204
     assert submit(client, "dave", GOOD_BOT, dave).status_code == 401
+    assert client.get("/me", headers={"Authorization": f"Bearer {dave}"}).status_code == 401
 
 
 def test_submission_is_checked_and_replaces_active_bot(client, monkeypatch):
