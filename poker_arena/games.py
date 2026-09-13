@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import queue
 import random
 import tempfile
@@ -9,12 +11,19 @@ from pathlib import Path
 
 from .bots import CallBot, FoldBot, RandomBot
 from .engine import DEFAULT_CONFIG, HandResult, play_hand
-from .sandbox import SandboxedBot, SandboxError
-from .types import Action, ActionType, IllegalAction, Observation
+from .sandbox import SandboxedBot
+from .types import Action, ActionType, Observation
+
+log = logging.getLogger(__name__)
 
 BUILTIN = {"call": CallBot, "fold": FoldBot, "random": RandomBot}
 HANDS = 100
 IDLE_SECONDS = 600
+sandbox_slots = threading.BoundedSemaphore(int(os.environ.get("ARENA_SANDBOX_GAMES", 8)))
+
+
+class Busy(Exception):
+    pass
 
 
 class Quit(Exception):
@@ -25,6 +34,8 @@ class Game:
     name = "you"
 
     def __init__(self, opponent: str, source: str | None = None):
+        if source is not None and not sandbox_slots.acquire(blocking=False):
+            raise Busy("too many games against submitted bots are running, try again later")
         self.opponent = opponent
         self.source = source
         self.status = "starting"
@@ -32,13 +43,14 @@ class Game:
         self.stacks = [DEFAULT_CONFIG.starting_stack] * 2
         self.hands = 0
         self.obs: Observation | None = None
-        self.last_hand: HandResult | None = None
-        self.version = 0
+        self.recent: list[HandResult] = []
+        self._bot = None
+        self._quit = False
         self._actions: queue.Queue = queue.Queue()
         self._changed = threading.Condition()
         threading.Thread(target=self._run, daemon=True).start()
 
-    def submit(self, action: Action, wait: float = 10.0) -> None:
+    def submit(self, action: Action, wait: float) -> None:
         with self._changed:
             obs = self.obs
             if self.status != "your_turn":
@@ -49,24 +61,29 @@ class Game:
                 obs.can_raise and obs.min_raise_to <= action.amount <= obs.max_raise_to
             ):
                 raise ValueError(f"raise must be between {obs.min_raise_to} and {obs.max_raise_to}")
+            self.recent = []
             self._publish("thinking")
-            version = self.version
             self._actions.put(action)
-            # Answer with the bot's reply when it is quick, so clients rarely need to poll.
-            self._changed.wait_for(lambda: self.version != version, timeout=wait)
+            self._changed.wait_for(lambda: self.status != "thinking", timeout=wait)
 
     def quit(self, wait: float = 0) -> None:
+        with self._changed:
+            self._quit = True
         self._actions.put(None)
+        # Closing the sandbox unblocks a bot that is mid-decision, so its container goes away now.
+        if isinstance(self._bot, SandboxedBot):
+            self._bot.close()
         with self._changed:
             self._changed.wait_for(lambda: self.status == "over", timeout=wait)
 
     def state(self) -> dict:
         with self._changed:
-            last = None
-            if self.last_hand is not None:
-                last = asdict(self.last_hand)
-                del last["config"], last["seed"]
-                last["holes"] = [last["holes"][0], last["holes"][1] if last["showdown"] else None]
+            recent = []
+            for hand in self.recent:
+                hand = asdict(hand)
+                del hand["config"], hand["seed"]
+                hand["holes"] = [hand["holes"][0], hand["holes"][1] if hand["showdown"] else None]
+                recent.append(hand)
             return {
                 "opponent": self.opponent,
                 "status": self.status,
@@ -75,7 +92,7 @@ class Game:
                 "hands": self.hands,
                 "max_hands": HANDS,
                 "observation": asdict(self.obs) if self.status == "your_turn" else None,
-                "last_hand": last,
+                "recent_hands": recent,
             }
 
     def act(self, obs: Observation) -> Action:
@@ -92,23 +109,23 @@ class Game:
 
     def _publish(self, status: str) -> None:
         self.status = status
-        self.version += 1
         self._changed.notify_all()
 
     def _run(self) -> None:
-        bot = None
         try:
             if self.source is None:
-                bot = BUILTIN[self.opponent]()
+                self._bot = BUILTIN[self.opponent]()
             else:
                 with tempfile.TemporaryDirectory() as tmp:
                     path = Path(tmp) / "bot.py"
                     path.write_text(self.source)
-                    bot = SandboxedBot(path)
+                    self._bot = SandboxedBot(path)
+                if self._quit:
+                    raise Quit("quit")
             rng = random.Random()
             while self.hands < HANDS and min(self.stacks) > 0:
                 result = play_hand(
-                    [self, bot],
+                    [self, self._bot],
                     seed=rng.randrange(2**31),
                     button=self.hands % 2,
                     starting_stacks=tuple(self.stacks),
@@ -116,15 +133,19 @@ class Game:
                 with self._changed:
                     self.stacks = [s + d for s, d in zip(self.stacks, result.deltas)]
                     self.hands += 1
-                    self.last_hand = result
+                    self.recent.append(result)
             self._finish(None)
-        except Quit as exc:
-            self._finish(str(exc))
-        except (SandboxError, IllegalAction) as exc:
-            self._finish(str(exc).splitlines()[0])
+        except Exception as exc:
+            if self._quit or isinstance(exc, Quit):
+                self._finish(str(exc) if isinstance(exc, Quit) else "quit")
+            else:
+                log.exception("game against %s failed", self.opponent)
+                self._finish((str(exc).splitlines() or [type(exc).__name__])[0])
         finally:
-            if isinstance(bot, SandboxedBot):
-                bot.close()
+            if isinstance(self._bot, SandboxedBot):
+                self._bot.close()
+            if self.source is not None:
+                sandbox_slots.release()
 
     def _finish(self, error: str | None) -> None:
         with self._changed:

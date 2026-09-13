@@ -226,8 +226,11 @@ def test_play_against_builtin_bot(client, monkeypatch):
     assert client.post("/game/action", json={"type": "raise", "amount": 1}, headers=headers).status_code == 409
 
     game = client.post("/game/action", json={"type": "raise", "amount": obs["min_raise_to"]}, headers=headers).json()
-    assert game["hands"] == 1 and game["last_hand"]["holes"][1] is None
-    assert game["stacks"] == [10_000 + obs["bb"], 10_000 - obs["bb"]]
+    # The fold bot gives up its button blind in hand 2 without asking us for a decision.
+    assert game["hands"] == 2
+    assert [hand["deltas"][0] for hand in game["recent_hands"]] == [obs["bb"], obs["sb"]]
+    assert game["recent_hands"][0]["holes"][1] is None
+    assert game["stacks"] == [10_000 + obs["bb"] + obs["sb"], 10_000 - obs["bb"] - obs["sb"]]
 
     assert client.delete("/game", headers=headers).status_code == 204
     assert client.get("/game", headers=headers).json()["status"] == "over"

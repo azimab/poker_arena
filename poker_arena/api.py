@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,8 @@ log = logging.getLogger(__name__)
 checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
 LOGIN_REDIRECT = os.environ.get("ARENA_LOGIN_REDIRECT")
 active_games: dict[int, games.Game] = {}
+games_lock = threading.Lock()
+GAME_WAIT = 2.0
 
 
 @asynccontextmanager
@@ -70,6 +73,16 @@ def token_hash(credentials: HTTPAuthorizationCredentials | None = Depends(bearer
 
 
 def current_account(token_hash: bytes = Depends(token_hash), conn: psycopg.Connection = Depends(get_conn)):
+    return find_account(conn, token_hash)
+
+
+# Game endpoints wait on the engine, so they must not hold a connection while they do.
+def game_account(token_hash: bytes = Depends(token_hash)):
+    with db.connect() as conn:
+        return find_account(conn, token_hash)
+
+
+def find_account(conn: psycopg.Connection, token_hash: bytes):
     account = conn.execute(
         "SELECT a.id, a.username FROM sessions s JOIN accounts a ON a.id = s.account_id "
         "WHERE s.token_hash = %s AND s.expires_at > now()",
@@ -314,45 +327,58 @@ def account_game(account) -> games.Game:
 
 
 @app.post("/game", status_code=201)
-def new_game(body: NewGame, account=Depends(current_account), conn: psycopg.Connection = Depends(get_conn)):
+def new_game(body: NewGame, account=Depends(game_account)):
     if (body.opponent is None) == (body.bot_id is None):
         raise HTTPException(422, "choose exactly one of opponent or bot_id")
-    if body.bot_id is None:
-        game = games.Game(body.opponent)
-    else:
-        bot = conn.execute(
-            "SELECT b.name, b.source, a.username FROM bots b JOIN accounts a ON a.id = b.account_id "
-            "WHERE b.id = %s AND b.status = 'active'",
-            (body.bot_id,),
-        ).fetchone()
+    bot = None
+    if body.bot_id is not None:
+        with db.connect() as conn:
+            bot = conn.execute(
+                "SELECT b.name, b.source, a.username FROM bots b JOIN accounts a ON a.id = b.account_id "
+                "WHERE b.id = %s AND b.status = 'active'",
+                (body.bot_id,),
+            ).fetchone()
         if bot is None:
             raise HTTPException(404, "no active bot with that id")
-        game = games.Game(f"{bot['username']}/{bot['name']}", bot["source"])
-    old = active_games.get(account["id"])
+
+    with games_lock:
+        old = active_games.pop(account["id"], None)
     if old is not None:
-        old.quit()
-    active_games[account["id"]] = game
+        # Waiting lets the old game hand back its sandbox slot before the new one claims it.
+        old.quit(wait=GAME_WAIT)
+    try:
+        if bot is None:
+            game = games.Game(body.opponent)
+        else:
+            game = games.Game(f"{bot['username']}/{bot['name']}", bot["source"])
+    except games.Busy as exc:
+        raise HTTPException(503, str(exc))
+    with games_lock:
+        displaced = active_games.get(account["id"])
+        active_games[account["id"]] = game
+    if displaced is not None:
+        displaced.quit()
     return game.state()
 
 
 @app.get("/game")
-def get_game(account=Depends(current_account)):
+def get_game(account=Depends(game_account)):
     return account_game(account).state()
 
 
 @app.post("/game/action")
-def game_action(body: GameAction, account=Depends(current_account)):
+def game_action(body: GameAction, account=Depends(game_account)):
     game = account_game(account)
     try:
-        game.submit(Action(body.type, body.amount))
+        game.submit(Action(body.type, body.amount), wait=GAME_WAIT)
     except ValueError as exc:
         raise HTTPException(409, str(exc))
     return game.state()
 
 
 @app.delete("/game", status_code=204)
-def quit_game(account=Depends(current_account)):
-    account_game(account).quit(wait=10)
+def quit_game(account=Depends(game_account)):
+    account_game(account).quit(wait=GAME_WAIT)
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).with_name("web"), html=True), name="web")

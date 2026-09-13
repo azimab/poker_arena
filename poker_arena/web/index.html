@@ -269,17 +269,17 @@
           </div>
         </template>
 
-        <template x-if="game?.last_hand">
+        <template x-for="(hand, i) in game?.recent_hands ?? []" :key="i">
           <div class="last-hand">
-            <h3>Last hand</h3>
-            <p x-text="handSummary(game.last_hand)"></p>
+            <h3 x-text="'Hand ' + (game.hands - game.recent_hands.length + i + 1)"></h3>
+            <p x-text="handSummary(hand)"></p>
             <p class="cards">
               you:
-              <template x-for="c in game.last_hand.holes[0]"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+              <template x-for="c in hand.holes[0]"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
               opponent:
-              <template x-for="c in game.last_hand.holes[1] ?? ['??', '??']"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+              <template x-for="c in hand.holes[1] ?? ['??', '??']"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
               board:
-              <template x-for="c in game.last_hand.board"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
+              <template x-for="c in hand.board"><span class="card" :class="suitClass(c)" x-text="card(c)"></span></template>
             </p>
           </div>
         </template>
