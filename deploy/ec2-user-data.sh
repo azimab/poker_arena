@@ -113,6 +113,27 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+cat >/etc/systemd/system/poker-arena-update.service <<UNIT
+[Unit]
+Description=deploy origin/main to poker-arena
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $ARENA_HOME/deploy/update.sh
+UNIT
+
+cat >/etc/systemd/system/poker-arena-update.timer <<'UNIT'
+[Unit]
+Description=poll origin/main for poker-arena deploys
+
+[Timer]
+OnCalendar=minutely
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 cat >/etc/nginx/conf.d/poker-arena.conf <<NGINX
 server {
     listen 80;
@@ -137,6 +158,7 @@ systemctl daemon-reload
 systemctl enable --now poker-arena-api.service
 systemctl enable --now nginx
 systemctl enable --now poker-arena.timer
+systemctl enable --now poker-arena-update.timer
 
 # certbot rewrites the server block above for TLS and installs its own renewal timer.
 if [ -n "$ARENA_DOMAIN" ]; then
