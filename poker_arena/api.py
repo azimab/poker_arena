@@ -32,6 +32,7 @@ from .types import Action, ActionType
 log = logging.getLogger(__name__)
 checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
 LOGIN_REDIRECT = os.environ.get("ARENA_LOGIN_REDIRECT")
+SECRET_KEY = os.environ.get("ARENA_SECRET_KEY")
 active_games: dict[int, games.Game] = {}
 games_lock = threading.Lock()
 GAME_WAIT = 2.0
@@ -42,6 +43,10 @@ async def lifespan(app: FastAPI):
     # Without the image every check would fail and be blamed on the submission.
     if not image_exists():
         raise RuntimeError(f"sandbox image {IMAGE!r} is unavailable (is docker running?)")
+    # The OAuth state lives in this cookie, so a per-process key fails logins
+    # after every restart rather than at startup.
+    if SECRET_KEY is None:
+        log.warning("ARENA_SECRET_KEY is unset; logins will break across restarts")
     with db.connect() as conn:
         db.init_schema(conn)
         conn.execute("DELETE FROM sessions WHERE expires_at <= now()")
@@ -53,7 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="poker-arena", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("ARENA_SECRET_KEY") or secrets.token_hex(32),
+    secret_key=SECRET_KEY or secrets.token_hex(32),
     max_age=600,
 )
 

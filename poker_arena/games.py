@@ -19,7 +19,9 @@ log = logging.getLogger(__name__)
 BUILTIN = {"call": CallBot, "fold": FoldBot, "random": RandomBot}
 HANDS = 100
 IDLE_SECONDS = 600
-sandbox_slots = threading.BoundedSemaphore(int(os.environ.get("ARENA_SANDBOX_GAMES", 8)))
+sandbox_slots = threading.BoundedSemaphore(
+    int(os.environ.get("ARENA_SANDBOX_GAMES", 8))
+)
 
 
 class Busy(Exception):
@@ -35,7 +37,9 @@ class Game:
 
     def __init__(self, opponent: str, source: str | None = None):
         if source is not None and not sandbox_slots.acquire(blocking=False):
-            raise Busy("too many games against submitted bots are running, try again later")
+            raise Busy(
+                "too many games against submitted bots are running, try again later"
+            )
         self.opponent = opponent
         self.source = source
         self.status = "starting"
@@ -60,7 +64,9 @@ class Game:
             if action.type is ActionType.RAISE and not (
                 obs.can_raise and obs.min_raise_to <= action.amount <= obs.max_raise_to
             ):
-                raise ValueError(f"raise must be between {obs.min_raise_to} and {obs.max_raise_to}")
+                raise ValueError(
+                    f"raise must be between {obs.min_raise_to} and {obs.max_raise_to}"
+                )
             self.recent = []
             self._publish("thinking")
             self._actions.put(action)
@@ -82,7 +88,10 @@ class Game:
             for hand in self.recent:
                 hand = asdict(hand)
                 del hand["config"], hand["seed"]
-                hand["holes"] = [hand["holes"][0], hand["holes"][1] if hand["showdown"] else None]
+                hand["holes"] = [
+                    hand["holes"][0],
+                    hand["holes"][1] if hand["showdown"] else None,
+                ]
                 recent.append(hand)
             return {
                 "opponent": self.opponent,
