@@ -4,7 +4,6 @@ import logging
 import os
 import secrets
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -24,13 +23,11 @@ from starlette.middleware.sessions import SessionMiddleware
 # auth reads the GitHub credentials at import, so this has to run first.
 load_dotenv()
 
-from . import auth, db, games
+from . import auth, db, games, jobs
 from .sandbox import IMAGE, MAX_SOURCE_BYTES, image_exists
-from .submission import BotLoadError, check_submission
 from .types import Action, ActionType
 
 log = logging.getLogger(__name__)
-checks = ThreadPoolExecutor(max_workers=int(os.environ.get("ARENA_CHECK_WORKERS", 2)))
 LOGIN_REDIRECT = os.environ.get("ARENA_LOGIN_REDIRECT")
 SECRET_KEY = os.environ.get("ARENA_SECRET_KEY")
 active_games: dict[int, games.Game] = {}
@@ -40,7 +37,6 @@ GAME_WAIT = 2.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Without the image every check would fail and be blamed on the submission.
     if not image_exists():
         raise RuntimeError(f"sandbox image {IMAGE!r} is unavailable (is docker running?)")
     # The OAuth state lives in this cookie, so a per-process key fails logins
@@ -50,8 +46,6 @@ async def lifespan(app: FastAPI):
     with db.connect() as conn:
         db.init_schema(conn)
         conn.execute("DELETE FROM sessions WHERE expires_at <= now()")
-        for bot in conn.execute("SELECT id, source FROM bots WHERE status = 'pending' ORDER BY id"):
-            checks.submit(run_check, bot["id"], bot["source"])
     yield
 
 
@@ -96,49 +90,6 @@ def find_account(conn: psycopg.Connection, token_hash: bytes):
     if account is None:
         raise HTTPException(401, "invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
     return account
-
-
-def run_check(bot_id: int, source: str) -> None:
-    try:
-        _run_check(bot_id, source)
-    except Exception:
-        log.exception("check for bot %s failed", bot_id)
-
-
-def _run_check(bot_id: int, source: str) -> None:
-    try:
-        name = check_submission(source)
-    except BotLoadError as exc:
-        with db.connect() as conn:
-            conn.execute(
-                "UPDATE bots SET status = 'rejected', error = %s WHERE id = %s AND status = 'pending'",
-                (str(exc), bot_id),
-            )
-        return
-
-    with db.connect() as conn:
-        row = conn.execute(
-            "SELECT a.id, b.status FROM accounts a JOIN bots b ON b.account_id = a.id "
-            "WHERE b.id = %s FOR UPDATE OF a",
-            (bot_id,),
-        ).fetchone()
-        if row["status"] != "pending":
-            return
-        account_id = row["id"]
-        # Checks run concurrently, so an older upload can finish after a newer one
-        # and must not displace it.
-        params = {"account": account_id, "bot": bot_id, "name": name}
-        conn.execute(
-            "UPDATE bots SET status = 'retired' "
-            "WHERE account_id = %(account)s AND status = 'active' AND id < %(bot)s",
-            params,
-        )
-        conn.execute(
-            "UPDATE bots SET name = %(name)s, status = CASE WHEN EXISTS ("
-            "  SELECT 1 FROM bots WHERE account_id = %(account)s AND status = 'active'"
-            ") THEN 'retired' ELSE 'active' END WHERE id = %(bot)s",
-            params,
-        )
 
 
 @app.get("/login")
@@ -219,8 +170,8 @@ def submit_bot(
         "INSERT INTO bots (account_id, source) VALUES (%s, %s) RETURNING id, status, created_at",
         (account["id"], source),
     ).fetchone()
+    jobs.enqueue(conn, "check", {"bot": bot["id"]}, priority=1)
     conn.commit()
-    checks.submit(run_check, bot["id"], source)
     return bot
 
 

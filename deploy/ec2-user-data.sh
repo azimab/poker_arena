@@ -1,7 +1,7 @@
 #!/bin/bash
 # EC2 user-data for an arena host on Amazon Linux 2025 (arm64 / t4g).
 #
-# Runs both the API (uvicorn behind nginx) and the nightly tournament timer.
+# Runs the API (uvicorn behind nginx), the job worker and the nightly tournament timer.
 # Launch it with IMDS locked down and NO IAM role. The only credentials on the
 # host are the ARENA_* values below, so give the database role access to the
 # arena tables and nothing else. The secrets live in the gitignored deploy/.env
@@ -73,8 +73,8 @@ Requires=docker.service
 User=arena
 WorkingDirectory=$ARENA_HOME
 EnvironmentFile=/etc/poker-arena.env
-# Live games, the submission-check pool and the sandbox slot semaphore are all
-# in-process state, so a second worker would fork them and break both.
+# Live games and the sandbox slot semaphore are in-process state, so a second
+# worker would fork them and break both.
 ExecStart=$ARENA_HOME/.venv/bin/uvicorn poker_arena.api:app \\
     --host 127.0.0.1 --port 8000 --workers 1 \\
     --proxy-headers --forwarded-allow-ips 127.0.0.1
@@ -85,18 +85,38 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
+cat >/etc/systemd/system/poker-arena-worker.service <<UNIT
+[Unit]
+Description=poker-arena job worker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+User=arena
+WorkingDirectory=$ARENA_HOME
+Environment=ARENA_PACE=1.0
+Environment=ARENA_WORKER_CONCURRENCY=4
+EnvironmentFile=/etc/poker-arena.env
+ExecStart=$ARENA_HOME/.venv/bin/python -m poker_arena.worker
+# SIGTERM drains in-flight legs; anything still running after this is
+# SIGKILLed and picked up by another worker once its lease expires.
+TimeoutStopSec=15min
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 cat >/etc/systemd/system/poker-arena.service <<UNIT
 [Unit]
-Description=poker-arena tournament
-After=docker.service
-Requires=docker.service
+Description=enqueue a poker-arena tournament
 
 [Service]
 Type=oneshot
 User=arena
 WorkingDirectory=$ARENA_HOME
 Environment=ARENA_HANDS=100
-Environment=ARENA_PACE=1.0
 EnvironmentFile=/etc/poker-arena.env
 ExecStart=$ARENA_HOME/.venv/bin/python deploy/tournament.py
 UNIT
@@ -156,6 +176,7 @@ NGINX
 
 systemctl daemon-reload
 systemctl enable --now poker-arena-api.service
+systemctl enable --now poker-arena-worker.service
 systemctl enable --now nginx
 systemctl enable --now poker-arena.timer
 systemctl enable --now poker-arena-update.timer

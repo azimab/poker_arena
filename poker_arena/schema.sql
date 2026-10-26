@@ -45,3 +45,35 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 
 ALTER TABLE matches ADD COLUMN IF NOT EXISTS tournament_id bigint REFERENCES tournaments (id);
+
+ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS failed_at timestamptz;
+
+CREATE UNIQUE INDEX IF NOT EXISTS matches_one_per_pairing ON matches (tournament_id, bot_a, bot_b);
+
+CREATE TABLE IF NOT EXISTS legs (
+    tournament_id bigint NOT NULL REFERENCES tournaments (id),
+    bot_a bigint NOT NULL REFERENCES bots (id),
+    bot_b bigint NOT NULL REFERENCES bots (id),
+    leg smallint NOT NULL CHECK (leg IN (0, 1)),
+    outcome jsonb NOT NULL,
+    PRIMARY KEY (tournament_id, bot_a, bot_b, leg)
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    kind text NOT NULL CHECK (kind IN ('check', 'leg', 'finalize')),
+    payload jsonb NOT NULL,
+    priority integer NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'dead')),
+    attempts integer NOT NULL DEFAULT 0,
+    max_attempts integer NOT NULL DEFAULT 3,
+    run_after timestamptz NOT NULL DEFAULT now(),
+    locked_by text,
+    locked_until timestamptz,
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS jobs_claimable ON jobs (priority DESC, id) WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS jobs_tournament ON jobs ((payload ->> 'tournament')) WHERE kind IN ('leg', 'finalize');

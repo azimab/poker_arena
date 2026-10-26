@@ -17,7 +17,6 @@ install_at() {
 # Wrapped in a function so bash has parsed all of it before git rewrites this file.
 main() {
     cd "$ARENA_HOME"
-    systemctl is-active --quiet poker-arena.service && exit 0
 
     as_arena git fetch -q origin main
     old=$(as_arena git rev-parse HEAD)
@@ -27,7 +26,7 @@ main() {
 
     echo "deploying $old -> $new"
     if install_at "$new" && as_arena .venv/bin/python -m pytest tests -q; then
-        systemctl restart poker-arena-api
+        systemctl restart poker-arena-api poker-arena-worker
         rm -f "$FAILED"
         echo "deployed $new"
     else

@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from poker_arena import api, auth, db
+from poker_arena.worker import Worker
 from poker_arena.api import app
 from poker_arena.rating import rate
 from poker_arena.sandbox import build_image, image_exists
@@ -58,10 +59,15 @@ def client():
         build_image()
     os.environ["ARENA_DATABASE_URL"] = DB_URL
     with db.connect() as conn:
-        conn.execute("DROP TABLE IF EXISTS matches, tournaments, bots, sessions, accounts")
+        conn.execute("DROP TABLE IF EXISTS jobs, legs, matches, tournaments, bots, sessions, accounts")
     with pytest.MonkeyPatch.context() as mp, TestClient(app) as client:
         mp.setattr(api, "LOGIN_REDIRECT", None)
-        yield client
+        worker = Worker(concurrency=2)
+        worker.start()
+        try:
+            yield client
+        finally:
+            worker.stop()
 
 
 def signup(client, monkeypatch, username, github_id=None, **kwargs):

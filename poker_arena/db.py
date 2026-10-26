@@ -14,5 +14,7 @@ def connect(url: str | None = None) -> psycopg.Connection:
 
 
 def init_schema(conn: psycopg.Connection) -> None:
+    # The API and workers start together, and concurrent CREATE ... IF NOT EXISTS can still collide.
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext('init-schema'))")
     conn.execute(SCHEMA.read_text())
     conn.commit()
