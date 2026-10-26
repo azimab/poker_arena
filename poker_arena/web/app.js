@@ -204,6 +204,15 @@ function arena() {
       return c[1] === "h" || c[1] === "d" ? "red" : "";
     },
 
+    navOn(name) {
+      const parent = { bot: "bots", tournament: "tournaments", match: "tournaments" };
+      return (parent[this.route] ?? this.route) === name;
+    },
+
+    sign(n) {
+      return n > 0 ? "pos" : n < 0 ? "neg" : "";
+    },
+
     botLabel(id) {
       const d = this.data;
       if (id === d.bot_a) return `${d.bot_a_username}/${d.bot_a_name}`;
